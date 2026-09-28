@@ -1,0 +1,42 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  :root {
+    /* JueBlog 黑色主题（HSL 格式，与 shadcn/ui 约定兼容） */
+    --background: 0 0% 4%; /* #0A0A0A 纯黑背景 */
+    --foreground: 0 0% 93%; /* #EDEDED 主文字 */
+    --card: 0 0% 8%; /* #141414 卡片 */
+    --card-foreground: 0 0% 93%;
+    --popover: 0 0% 8%;
+    --popover-foreground: 0 0% 93%;
+    --primary: 0 0% 93%; /* 主操作色 = 白 */
+    --primary-foreground: 0 0% 4%;
+    --secondary: 0 0% 8%;
+    --secondary-foreground: 0 0% 93%;
+    --muted: 0 0% 8%;
+    --muted-foreground: 0 0% 54%; /* #8A8A8A 次要文字 */
+    --accent: 0 0% 10%;
+    --accent-foreground: 0 0% 93%;
+    --destructive: 0 72% 51%;
+    --destructive-foreground: 0 0% 98%;
+    --border: 0 0% 15%; /* #262626 细边框 */
+    --input: 0 0% 15%;
+    --ring: 262 83% 58%; /* 品牌紫 #7C3AED，仅用于聚焦/高亮 */
+    --brand: 262 83% 58%;
+    --radius: 0.625rem; /* 10px，落在 8-12px 圆角区间 */
+  }
+
+  * {
+    @apply border-border;
+  }
+
+  html {
+    color-scheme: dark;
+  }
+
+  body {
+    @apply bg-background text-foreground antialiased;
+  }
+}

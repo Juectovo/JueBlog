@@ -1,0 +1,401 @@
+/// JueBlog 数据模型 v1 —— 第 2 步「数据库」
+///
+/// 约定：
+/// - 某模型与 User 存在多条关系时，所有 @relation 均显式命名以消除歧义
+/// - 删除用户时整条数据链级联清理（onDelete: Cascade），不留孤儿数据
+/// - viewCount / memberCount 为冗余计数字段：写路径维护，读路径免 COUNT
+/// - Friendship 约定 userAId 字典序 < userBId，好友关系只存一行
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider  = "postgresql"
+  url       = env("DATABASE_URL") // 运行时：Supabase 事务池器（PgBouncer）
+  directUrl = env("DIRECT_URL") // 迁移与 db push：Supabase 会话池器
+}
+
+// ============================================================
+// 枚举
+// ============================================================
+
+/// 文章可见性
+enum PostStatus {
+  DRAFT   // 草稿：仅作者可见，可继续编辑
+  PUBLIC  // 公开：所有人可读，进入首页与好友流时间线
+  PRIVATE // 私密：仅作者自己可见
+}
+
+/// 群组可见性
+enum GroupVisibility {
+  PUBLIC  // 公开：任何人可浏览文章墙、可申请加入
+  PRIVATE // 私密：内容仅成员可见，群组可被搜索到
+  INVITE  // 邀请制：不可被搜索，仅受邀加入
+}
+
+/// 群组成员角色
+enum GroupRole {
+  OWNER  // 群主（建群者，与 Group.ownerId 对应）
+  ADMIN  // 管理员：可审核内容、管理成员
+  MEMBER // 普通成员：可发布/分享文章到群组
+}
+
+/// 好友申请状态
+enum FriendRequestStatus {
+  PENDING  // 待处理
+  ACCEPTED // 已通过（通过时写入 Friendship）
+  DECLINED // 已拒绝
+}
+
+/// 通知类型
+enum NotificationType {
+  FRIEND_REQUEST  // 收到好友申请
+  FRIEND_ACCEPTED // 发出的申请被通过
+  POST_LIKE       // 文章被点赞
+  POST_COMMENT    // 文章被评论
+  COMMENT_REPLY   // 评论被回复
+  NEW_POST        // 好友发布了新文章
+  GROUP_POST      // 加入的群组有新文章
+  GROUP_INVITE    // 被邀请加入群组
+}
+
+// ============================================================
+// NextAuth 必备四表（Auth.js 官方 Prisma Schema 结构）
+// ============================================================
+
+/// 用户：NextAuth 账号主体，所有业务关系的锚点
+model User {
+  id            String    @id @default(cuid()) // 全局唯一 ID
+  name          String?   // 显示名（来自 OAuth 资料或注册时填写）
+  email         String?   @unique // 登录邮箱，也是邮箱魔法链接的收件地址
+  emailVerified DateTime? // 邮箱验证时间，null = 未验证
+  passwordHash  String?   // 密码的 bcrypt 哈希（邮箱+密码注册用户专用；OAuth / 纯魔法链接用户为 null）
+  image         String?   // NextAuth 登录返回的头像 URL（可被 Profile.avatarUrl 覆盖）
+  createdAt     DateTime  @default(now()) // 注册时间
+  updatedAt     DateTime  @updatedAt
+
+  // —— NextAuth ——
+  accounts Account[] // OAuth 账号绑定（GitHub 等，一个用户可多个）
+  sessions Session[] // 活跃登录会话
+
+  // —— 博客 ——
+  posts     Post[]     // 我发布的文章
+  comments  Comment[]  // 我发表的评论
+  likes     Like[]     // 我的点赞
+  bookmarks Bookmark[] // 我的收藏
+
+  // —— 社交 ——
+  requestsSent           FriendRequest[] @relation("FriendRequestRequester") // 我发出的好友申请
+  requestsReceived       FriendRequest[] @relation("FriendRequestAddressee") // 我收到的好友申请
+  friendshipsAsA         Friendship[]    @relation("FriendshipUserA")        // 好友关系（A 侧）
+  friendshipsAsB         Friendship[]    @relation("FriendshipUserB")        // 好友关系（B 侧）
+  following              Follow[]        @relation("FollowFollower")         // 我关注的人
+  followers              Follow[]        @relation("FollowFollowing")        // 关注我的人
+  notifications          Notification[]  @relation("NotificationRecipient")  // 我收到的通知
+  triggeredNotifications Notification[]  @relation("NotificationActor")      // 我触发的通知
+
+  // —— 群组 ——
+  ownedGroups      Group[]       @relation("GroupOwner")      // 我创建的群组
+  memberships      GroupMember[]                              // 我加入的群组
+  groupPostsShared GroupPost[]   @relation("GroupPostSharer") // 我分享到群组的文章
+
+  // —— 扩展资料 ——
+  profile Profile? // 一对一扩展资料（博客域名、社交链接等）
+}
+
+/// OAuth 账号绑定（GitHub / 未来的 Google 等）
+model Account {
+  id                String  @id @default(cuid()) // 主键
+  userId            String  // 所属用户
+  type              String  // 账号类型（oauth / email）
+  provider          String  // 提供商（github）
+  providerAccountId String  // 提供商侧的用户 ID
+  refresh_token     String? // 刷新令牌
+  refresh_token_expires_in Int? // 刷新令牌有效期（秒）；GitHub OAuth 现已返回该字段，缺失会导致 linkAccount 失败
+  access_token      String? // 访问令牌
+  expires_at        Int?    // 访问令牌过期时间（Unix 秒）
+  token_type        String? // 令牌类型（bearer）
+  scope             String? // 授权范围
+  id_token          String? // OIDC id token
+  session_state     String? // OAuth 会话状态
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([provider, providerAccountId]) // 同一提供商账号只能绑定一次
+  @@index([userId])                       // 按用户拉取全部绑定
+}
+
+/// 登录会话
+model Session {
+  id           String   @id @default(cuid()) // 主键
+  sessionToken String   @unique // 会话令牌（cookie 中携带）
+  userId       String   // 所属用户
+  expires      DateTime // 过期时间
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId]) // 按用户清理/查询会话
+}
+
+/// 邮箱令牌表：魔法链接 / 注册邮箱验证 / 密码重置三种流程共用
+/// （令牌均为随机一次性值，各流程路由各自校验，互不冲突）
+model VerificationToken {
+  identifier String   // 目标邮箱
+  token      String   @unique // 令牌（URL 中携带；@unique 兼容 Adapter 的查询路径）
+  expires    DateTime // 过期时间
+
+  @@id([identifier, token]) // 复合主键：同一邮箱可同时存在多个有效令牌
+}
+
+// ============================================================
+// 用户扩展
+// ============================================================
+
+/// 用户扩展资料（1:1）：个人博客的门面信息
+model Profile {
+  id        String   @id @default(cuid()) // 主键
+  userId    String   @unique // 所属用户（1:1）
+  username  String   @unique // 博客域名 username.jueblog.com 的子域部分（小写字母/数字/连字符；www/api 等保留字由应用层校验）
+  bio       String?  // 一句话简介
+  avatarUrl String?  // 自定义头像 URL（优先于 User.image 展示）
+  website   String?  // 个人网站
+  github    String?  // GitHub 主页链接
+  twitter   String?  // X（Twitter）主页链接
+  location  String?  // 所在地
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+}
+
+// ============================================================
+// 博客
+// ============================================================
+
+/// 博客文章
+model Post {
+  id          String     @id @default(cuid()) // 主键
+  authorId    String     // 作者
+  title       String     // 标题
+  slug        String     // URL 片段：jueblog.com/[username]/[slug]
+  summary     String?    // 摘要（列表页展示，为空时由前端截取正文）
+  content     String     // 正文（Markdown 源文）
+  coverUrl    String?    // 封面图 URL
+  status      PostStatus @default(DRAFT) // 可见性状态
+  viewCount   Int        @default(0) // 阅读数（冗余计数，文章页每次阅读 +1）
+  publishedAt DateTime?  // 首次发布时间（DRAFT 为 null）
+  createdAt   DateTime   @default(now())
+  updatedAt   DateTime   @updatedAt
+
+  author User @relation(fields: [authorId], references: [id], onDelete: Cascade)
+
+  comments      Comment[]      // 评论区
+  likes         Like[]         // 点赞
+  bookmarks     Bookmark[]     // 收藏
+  postTags      PostTag[]      // 标签关联
+  groupPosts    GroupPost[]    // 被分享到群组的记录
+  notifications Notification[] // 引用本文章的通知
+
+  @@unique([authorId, slug])                 // 同一作者下 slug 唯一
+  @@index([status, publishedAt(sort: Desc)]) // 首页 / 好友流时间线查询
+  @@index([authorId, status])                // 个人博客页按作者拉取文章
+}
+
+/// 评论（支持嵌套回复）
+model Comment {
+  id        String    @id @default(cuid()) // 主键
+  postId    String    // 所属文章
+  authorId  String    // 评论人
+  parentId  String?   // 父评论 ID，null = 顶层评论
+  content   String    // 评论内容（纯文本）
+  createdAt DateTime  @default(now())
+  deletedAt DateTime? // 软删除时间：保留楼层结构，前端展示为「已删除」
+
+  post   Post @relation(fields: [postId], references: [id], onDelete: Cascade)
+  author User @relation(fields: [authorId], references: [id], onDelete: Cascade)
+  parent  Comment?  @relation("CommentReplies", fields: [parentId], references: [id], onDelete: Cascade) // 父评论
+  replies Comment[] @relation("CommentReplies") // 回复（两层展示：顶层 + 回复列表）
+  notifications Notification[] // 引用本评论的通知
+
+  @@index([postId, createdAt]) // 文章详情页按楼层拉取
+  @@index([parentId])          // 递归拉取某条评论的回复
+}
+
+/// 点赞
+model Like {
+  id        String   @id @default(cuid()) // 主键
+  userId    String   // 点赞人
+  postId    String   // 被赞文章
+  createdAt DateTime @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+  post Post @relation(fields: [postId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, postId]) // 一人一篇只能赞一次
+  @@index([postId])          // 文章点赞列表 / 计数
+}
+
+/// 收藏
+model Bookmark {
+  id        String   @id @default(cuid()) // 主键
+  userId    String   // 收藏人
+  postId    String   // 被收藏文章
+  createdAt DateTime @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+  post Post @relation(fields: [postId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, postId])                // 一人一篇只收藏一次
+  @@index([userId, createdAt(sort: Desc)])  // 个人收藏夹时间线
+}
+
+/// 标签（全局标签池）
+model Tag {
+  id        String   @id @default(cuid()) // 主键
+  name      String   @unique // 标签名（全局唯一，应用层统一小写）
+  createdAt DateTime @default(now())
+
+  postTags PostTag[] // 使用该标签的文章
+
+  @@index([name]) // 标签搜索前缀匹配
+}
+
+/// 文章-标签关联表
+model PostTag {
+  postId String // 文章
+  tagId  String // 标签
+
+  post Post @relation(fields: [postId], references: [id], onDelete: Cascade)
+  tag  Tag  @relation(fields: [tagId], references: [id], onDelete: Cascade)
+
+  @@id([postId, tagId]) // 复合主键：天然防重复关联
+  @@index([tagId])      // 反查某标签下的全部文章
+}
+
+// ============================================================
+// 社交
+// ============================================================
+
+/// 好友申请
+model FriendRequest {
+  id          String              @id @default(cuid()) // 主键
+  requesterId String              // 发起人
+  addresseeId String              // 接收人
+  status      FriendRequestStatus @default(PENDING) // 申请状态
+  message     String?             // 申请附言（如「交换友链」）
+  createdAt   DateTime            @default(now()) // 发起时间
+  respondedAt DateTime?           // 处理时间（通过/拒绝时写入）
+
+  requester User @relation("FriendRequestRequester", fields: [requesterId], references: [id], onDelete: Cascade)
+  addressee User @relation("FriendRequestAddressee", fields: [addresseeId], references: [id], onDelete: Cascade)
+
+  @@unique([requesterId, addresseeId]) // 同一对用户只保留一条申请记录（可重复发起，复用更新）
+  @@index([addresseeId, status])       // 收件箱：查我收到待处理的申请
+}
+
+/// 好友关系（双向，单行存储）
+model Friendship {
+  id        String   @id @default(cuid()) // 主键
+  userAId   String   // 用户 A（约定字典序 < 用户 B，防重复建行）
+  userBId   String   // 用户 B
+  createdAt DateTime @default(now()) // 成为好友的时间
+
+  userA User @relation("FriendshipUserA", fields: [userAId], references: [id], onDelete: Cascade)
+  userB User @relation("FriendshipUserB", fields: [userBId], references: [id], onDelete: Cascade)
+
+  @@unique([userAId, userBId]) // 同一对好友只存一行
+  @@index([userBId])           // 与 userA 侧唯一索引配合，支持双向查找
+}
+
+/// 关注关系（单向；与好友互补，可只关注不强加好友）
+model Follow {
+  id          String   @id @default(cuid()) // 主键
+  followerId  String   // 发起关注的人
+  followingId String   // 被关注的人
+  createdAt   DateTime @default(now())
+
+  follower  User @relation("FollowFollower", fields: [followerId], references: [id], onDelete: Cascade)
+  following User @relation("FollowFollowing", fields: [followingId], references: [id], onDelete: Cascade)
+
+  @@unique([followerId, followingId]) // 不能重复关注
+  @@index([followingId])              // 粉丝列表
+}
+
+/// 站内通知
+model Notification {
+  id        String           @id @default(cuid()) // 主键
+  userId    String           // 接收者
+  actorId   String?          // 触发者（系统通知为 null）
+  type      NotificationType // 通知类型
+  postId    String?          // 关联文章（可选）
+  commentId String?          // 关联评论（可选）
+  groupId   String?          // 关联群组（可选）
+  readAt    DateTime?        // 已读时间，null = 未读
+  createdAt DateTime         @default(now())
+
+  user  User  @relation("NotificationRecipient", fields: [userId], references: [id], onDelete: Cascade)
+  actor User? @relation("NotificationActor", fields: [actorId], references: [id], onDelete: Cascade)
+  post    Post?    @relation(fields: [postId], references: [id], onDelete: Cascade)
+  comment Comment? @relation(fields: [commentId], references: [id], onDelete: Cascade)
+  group   Group?   @relation(fields: [groupId], references: [id], onDelete: Cascade)
+
+  @@index([userId, readAt, createdAt(sort: Desc)]) // 通知中心：未读优先、按时间倒序
+}
+
+// ============================================================
+// 群组
+// ============================================================
+
+/// 群组（圈子）
+model Group {
+  id          String          @id @default(cuid()) // 主键
+  ownerId     String          // 群主
+  name        String          // 群组名
+  slug        String          @unique // URL：jueblog.com/groups/[slug]
+  description String?         // 群组简介
+  coverUrl    String?         // 封面图 URL
+  visibility  GroupVisibility @default(PUBLIC) // 可见性
+  memberCount Int             @default(0) // 成员数（冗余计数，入群/退群时维护）
+  createdAt   DateTime        @default(now())
+  updatedAt   DateTime        @updatedAt
+
+  owner         User           @relation("GroupOwner", fields: [ownerId], references: [id], onDelete: Cascade)
+  members       GroupMember[]  // 成员列表
+  posts         GroupPost[]    // 群组文章墙
+  notifications Notification[] // 引用本群组的通知
+
+  @@index([visibility]) // 群组广场按可见性过滤
+}
+
+/// 群组成员
+model GroupMember {
+  id       String    @id @default(cuid()) // 主键
+  groupId  String    // 所属群组
+  userId   String    // 成员
+  role     GroupRole @default(MEMBER) // 群内角色
+  joinedAt DateTime  @default(now()) // 加入时间
+
+  group Group @relation(fields: [groupId], references: [id], onDelete: Cascade)
+  user  User  @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([groupId, userId]) // 一人一群一条成员记录
+  @@index([userId])           // 「我加入的群组」
+}
+
+/// 群组文章墙（把个人博客的文章分享进群组的关联）
+model GroupPost {
+  id         String   @id @default(cuid()) // 主键
+  groupId    String   // 目标群组
+  postId     String   // 被分享的文章
+  sharedById String   // 分享人（可以是作者本人，也可以是成员转发）
+  createdAt  DateTime @default(now()) // 分享时间
+
+  group    Group @relation(fields: [groupId], references: [id], onDelete: Cascade)
+  post     Post  @relation(fields: [postId], references: [id], onDelete: Cascade)
+  sharedBy User  @relation("GroupPostSharer", fields: [sharedById], references: [id], onDelete: Cascade)
+
+  @@unique([groupId, postId])              // 一篇文章在一个群组只出现一次
+  @@index([groupId, createdAt(sort: Desc)]) // 群组文章墙时间线
+  @@index([postId])                         // 反查一篇文章被分享到了哪些群组
+}
