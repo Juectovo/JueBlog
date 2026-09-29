@@ -36,3 +36,6 @@ next-env.d.ts
 
 .vercel
 .env*
+
+# ZCode 工作区配置
+.zcode/
