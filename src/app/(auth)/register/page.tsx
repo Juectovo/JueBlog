@@ -27,6 +27,7 @@ export default function RegisterPage() {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [done, setDone] = useState<string | null>(null);
+  const [devVerifyUrl, setDevVerifyUrl] = useState<string | null>(null);
 
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
@@ -48,6 +49,8 @@ export default function RegisterPage() {
 
       if (res.status === 201) {
         setDone(email.trim());
+        // 开发模式（未配置邮件服务）：后端把验证链接直接返回，点击即可完成验证
+        setDevVerifyUrl(data.devVerifyUrl ?? null);
         return;
       }
       setError(data.error ?? "注册失败，请稍后重试");
@@ -69,13 +72,26 @@ export default function RegisterPage() {
             </CardDescription>
           </CardHeader>
           <CardContent>
-            <p className="text-xs leading-relaxed text-muted-foreground">
+            <p className="text-sm leading-relaxed text-foreground">
+              验证邮件已发送至 <span className="font-medium">{done}</span>，请查收并点击邮件中的链接完成激活。
+            </p>
+            {devVerifyUrl && (
+              <div className="mt-4 rounded-md border border-brand/40 bg-brand/5 p-3">
+                <p className="text-xs text-muted-foreground">
+                  开发模式（未配置邮件服务）：点击下方链接完成验证
+                </p>
+                <a
+                  href={devVerifyUrl}
+                  className="mt-2 block break-all text-xs text-brand underline underline-offset-4"
+                >
+                  {devVerifyUrl}
+                </a>
+              </div>
+            )}
+            <p className="mt-4 text-xs leading-relaxed text-muted-foreground">
               验证完成后即可使用密码或魔法链接登录。没收到？检查一下垃圾邮件箱，
               或{" "}
-              <Link
-                href="/register"
-                className="transition-colors hover:text-foreground"
-              >
+              <Link href="/register" className="transition-colors hover:text-foreground">
                 重新注册
               </Link>
               。
@@ -125,13 +141,13 @@ export default function RegisterPage() {
                 id="password"
                 type="password"
                 autoComplete="new-password"
-                placeholder="至少 8 位，包含字母和数字"
+                placeholder="8-16 位，需包含字母和数字"
                 value={password}
                 onChange={(e) => setPassword(e.target.value)}
                 required
               />
               <p className="text-xs text-muted-foreground">
-                用户名不需要起——系统会按邮箱自动生成，之后可以修改。
+                密码规则与 QQ 一致：8-16 位，需同时包含字母和数字。注册后可在「设置」中修改。
               </p>
             </div>
 

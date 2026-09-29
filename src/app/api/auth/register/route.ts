@@ -4,7 +4,7 @@ import { NextResponse } from "next/server";
 import { Prisma } from "@prisma/client";
 import { z } from "zod";
 
-import { sendVerificationEmail } from "@/lib/mail";
+import { sendVerificationEmail, getMailMode } from "@/lib/mail";
 import { prisma } from "@/lib/prisma";
 import { generateUsername } from "@/lib/profile";
 import { emailSchema, passwordSchema } from "@/lib/validators";
@@ -72,10 +72,32 @@ export async function POST(req: Request) {
 
     const origin = process.env.NEXTAUTH_URL ?? new URL(req.url).origin;
     const verifyUrl = `${origin}/api/auth/verify-email?token=${token}&email=${encodeURIComponent(email)}`;
-    await sendVerificationEmail(email, verifyUrl);
+
+    // 邮件发送失败必须明确告知原因（如 Resend 测试模式限制），不让用户干等一封永远不来的邮件
+    try {
+      await sendVerificationEmail(email, verifyUrl);
+    } catch (mailErr) {
+      console.error("[register] 验证邮件发送失败:", mailErr);
+      return NextResponse.json(
+        {
+          error:
+            mailErr instanceof Error
+              ? `验证邮件发送失败：${mailErr.message}`
+              : "验证邮件发送失败，请联系站长或稍后重试",
+        },
+        { status: 502 }
+      );
+    }
+
+    // 开发模式（未配置 SMTP/Resend）：验证链接直接返回给前端，本地也能走通全流程
+    const devVerifyUrl =
+      getMailMode() === "console" && process.env.NODE_ENV !== "production" ? verifyUrl : undefined;
 
     return NextResponse.json(
-      { message: "注册成功，验证邮件已发送，请查收" },
+      {
+        message: "注册成功，验证邮件已发送，请查收",
+        ...(devVerifyUrl ? { devVerifyUrl } : {}),
+      },
       { status: 201 }
     );
   } catch (err) {

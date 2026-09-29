@@ -11,10 +11,14 @@ export const emailSchema = z
   .email("邮箱格式不正确")
   .transform((v) => v.trim().toLowerCase());
 
-/** 密码强度：至少 8 位，且同时包含字母和数字 */
+/**
+ * 密码强度（对齐 QQ 标准）：8-16 位，同时包含字母和数字，不含空格
+ */
 export const passwordSchema = z
   .string()
   .min(8, "密码至少 8 位")
+  .max(16, "密码最多 16 位")
+  .regex(/^[^\s]+$/, "密码不能包含空格")
   .regex(/[a-zA-Z]/, "密码需包含字母")
   .regex(/\d/, "密码需包含数字");
 
