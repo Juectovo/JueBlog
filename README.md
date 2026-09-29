@@ -14,6 +14,8 @@
 
 **🌐 [在线体验 →](https://jueblog-juectovo.vercel.app)** · 打开后用 GitHub 登录即可玩转全部功能
 
+> **🇨🇳 国内访问提示**：GitHub 的图片代理（`camo.githubusercontent.com`）与 `*.vercel.app` 域名在国内需要代理访问——README 图片无法显示不影响项目功能与代码使用。部署自有域名后可国内直连（见下方部署说明）。
+
 </div>
 
 ## ✨ 截图
